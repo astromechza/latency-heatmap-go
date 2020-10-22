@@ -8,12 +8,18 @@ import (
 	"golang.org/x/net/html"
 )
 
-const OutOfRange = time.Duration(1<<63 - 1)
-
 type Datapoint struct {
 	Time time.Time
 	Latency time.Duration
 }
+
+const js = "" +
+	"var details;" +
+	"function a(evt) {details = document.getElementById(\"details\").firstChild;}" +
+	"function b(rt, ls, le, v) {" +
+	"details.nodeValue = \"at \" + rt + \", range: \" + ls + \"-\" + le + \", count: \" +  v;" +
+	"}" +
+	"function c() {details.nodeValue = \"(hover over a square for details)\";}"
 
 func RenderSVG(
 	points []Datapoint,
@@ -53,6 +59,8 @@ func RenderSVG(
 		panic("wat")
 	}
 	rows := int((maxValue - minValue) / rowPeriod)
+	fmt.Printf("%d rows of %s\n", rows, rowPeriod)
+	fmt.Printf("%d columns of %s\n", columns, columnInterval)
 
 	blocks := make([][]int, columns)
 	for i := 0; i < columns; i++ {
@@ -76,63 +84,126 @@ func RenderSVG(
 	}
 
 	imageWidth, imageHeight := 1024.0, 768.0
+	padLeft := 60.0
+	padTop := 30.0
+	padRight := 10.0
+	padBottom := 60.0
 
 	svgNode := &html.Node{
 		Type: html.ElementNode,
 		Data: "svg",
 		Attr: []html.Attribute{
-			{"", "version", "1.1"},
-			{"", "width", fmt.Sprint(imageWidth)},
-			{"", "height", fmt.Sprint(imageHeight)},
-			{"", "viewBox", fmt.Sprintf("0 0 %d %d", imageWidth, imageHeight)},
-			{"", "xmlns", "http://www.w3.org/2000/svg"},
+			{Key: "version", Val: "1.1"},
+			{Key: "width", Val: fmt.Sprint(imageWidth)},
+			{Key: "height", Val: fmt.Sprint(imageHeight)},
+			{Key: "viewBox", Val: fmt.Sprintf("0 0 %f %f", imageWidth, imageHeight)},
+			{Key: "xmlns", Val: "http://www.w3.org/2000/svg"},
+			{Key: "onload", Val: "a(evt)"},
 		},
 	}
+	svgNode.AppendChild(&html.Node{
+		Type: html.RawNode,
+		Data: "<script type=\"text/ecmascript\"\n><![CDATA[\n" + js + "]]>\n</script>",
+	})
+
 	svgNode.AppendChild(&html.Node{
 		Type: html.ElementNode,
 		Data: "rect",
 		Attr: []html.Attribute{
-			{"", "x", "0"},
-			{"", "y", "0"},
-			{"", "width", fmt.Sprint(imageWidth)},
-			{"", "height", fmt.Sprint(imageHeight)},
-			{"", "fill", "rgb(255, 255, 255)"},
+			{Key: "x", Val: "0"},
+			{Key: "y", Val: "0"},
+			{Key: "width", Val: fmt.Sprint(imageWidth)},
+			{Key: "height", Val: fmt.Sprint(imageHeight)},
+			{Key: "fill", Val: "rgb(255, 255, 255)"},
 		},
 	})
 
-	svgNode.AppendChild(boldLine(0, 0, imageWidth, 0))
-	svgNode.AppendChild(boldLine(imageWidth, 0, imageWidth, imageHeight))
-	svgNode.AppendChild(boldLine(0, 0, 0, imageHeight))
-	svgNode.AppendChild(boldLine(0, imageHeight, imageWidth, imageHeight))
-
-	widthBetweenColumns := imageWidth / float64(columns)
-	for i := 1.0; i < float64(columns); i++ {
-		svgNode.AppendChild(faintLine(widthBetweenColumns * i, 0, widthBetweenColumns * i, imageHeight))
-	}
-
-	heightBetweenRows := imageHeight / float64(rows)
-	for i := 1.0; i < float64(rows); i++ {
-		svgNode.AppendChild(faintLine(0, heightBetweenRows * i, imageWidth, heightBetweenRows * i))
-	}
+	widthBetweenColumns := (imageWidth - padLeft - padRight) / float64(columns)
+	heightBetweenRows := (imageHeight - padTop - padBottom) / float64(rows)
 
 	for i := 0; i < columns; i++ {
 		for j := 0; j < rows; j++ {
-			val := float64(blocks[i][j]) / float64(largestFrequency)
-			svgNode.AppendChild(&html.Node{
-				Type: html.ElementNode,
-				Data: "rect",
-				Attr: []html.Attribute{
-					{"", "x", fmt.Sprint(float64(i) * widthBetweenColumns)},
-					{"", "y", fmt.Sprint(float64(j) * heightBetweenRows)},
-					{"", "width", fmt.Sprint(widthBetweenColumns)},
-					{"", "height", fmt.Sprint(heightBetweenRows)},
-					{"", "fill", fmt.Sprintf("rgba(255, 0, 0, %d)", int(255 * val))},
-				},
-			})
+			if blocks[i][columns - j - 1] > 0 {
+				val := float64(blocks[i][columns-j-1]) / float64(largestFrequency)
+				newNode := &html.Node{
+					Type: html.ElementNode,
+					Data: "rect",
+					Attr: []html.Attribute{
+						{Key: "x", Val: fmt.Sprint(padLeft + float64(i)*widthBetweenColumns)},
+						{Key: "y", Val: fmt.Sprint(padTop + float64(j)*heightBetweenRows)},
+						{Key: "width", Val: fmt.Sprint(widthBetweenColumns)},
+						{Key: "height", Val: fmt.Sprint(heightBetweenRows)},
+						{Key: "fill", Val: CividisRGB(val)},
+						{Key: "onmouseover", Val: fmt.Sprintf(
+							"b(%q, %q, %q, %d)",
+								// the relative time on the left column
+								time.Duration(i) * columnInterval,
+								// the latency of the row start
+								time.Duration(columns-j-1) * rowPeriod,
+								time.Duration(columns-j) * rowPeriod,
+								blocks[i][columns-j-1],
+							)},
+						{Key: "onmouseout", Val: "c()"},
+					},
+				}
+				svgNode.AppendChild(newNode)
+			}
 		}
 	}
 
+	svgNode.AppendChild(boldLine(padLeft, padTop, imageWidth - padRight, padTop))
+	svgNode.AppendChild(boldLine(imageWidth - padRight, padTop, imageWidth - padRight, imageHeight - padBottom))
+	svgNode.AppendChild(boldLine(padLeft, padTop, padLeft, imageHeight - padBottom))
+	svgNode.AppendChild(boldLine(padLeft, imageHeight - padBottom, imageWidth - padRight, imageHeight - padBottom))
+
+	svgNode.AppendChild(text(padLeft, imageHeight - padBottom + 5, "0", "hanging", "start"))
+	svgNode.AppendChild(text(imageWidth - padRight, imageHeight - padBottom + 5, fmt.Sprintf("+%s", friendly(columnInterval * time.Duration(columns))), "hanging", "end"))
+	svgNode.AppendChild(text(padLeft / 2, imageHeight / 2, "Latency", "middle", "middle"))
+	svgNode.LastChild.Attr = append(svgNode.LastChild.Attr, html.Attribute{Key: "transform", Val: fmt.Sprintf("rotate(90, %f, %f)", padLeft / 2, imageHeight / 2)})
+
+	svgNode.AppendChild(text(padLeft - 5, imageHeight - padBottom, "0", "alphabetic", "end"))
+	svgNode.AppendChild(text(padLeft - 5, padTop, fmt.Sprintf("%s", friendly(rowPeriod * time.Duration(rows))), "hanging", "end"))
+	svgNode.AppendChild(text(imageWidth / 2, imageHeight - padBottom + 5, "Relative time", "hanging", "middle"))
+
+	svgNode.AppendChild(text(imageWidth / 2, imageHeight - padBottom / 3, "(hover over a square for details)", "middle", "middle"));
+	svgNode.LastChild.Attr = append(svgNode.LastChild.Attr, html.Attribute{Key: "id", Val: "details"})
+
 	return svgNode, nil
+}
+
+func friendly(duration time.Duration) time.Duration {
+	if duration > time.Hour {
+		return duration.Round(time.Minute * 10)
+	}
+	if duration > time.Minute {
+		return duration.Round(time.Second * 10)
+	}
+	if duration > time.Second {
+		return duration.Round(time.Millisecond * 10)
+	}
+	if duration > time.Millisecond {
+		return duration.Round(time.Microsecond * 10)
+	}
+	if duration > time.Microsecond {
+		return duration.Round(time.Nanosecond * 10)
+	}
+	return duration
+}
+
+func text(x, y float64, input string, baseline, anchor string) *html.Node {
+	block := html.Node{
+		Type: html.ElementNode,
+		Data: "text",
+		Attr: []html.Attribute{
+			{Key: "text-anchor", Val: anchor},
+			{Key: "dominant-baseline", Val: baseline},
+			{Key: "x", Val: fmt.Sprint(x)},
+			{Key: "y", Val: fmt.Sprint(y)},
+			{Key: "fill", Val: "black"},
+		},
+	}
+	block.AppendChild(&html.Node{Type: html.TextNode, Data: input})
+	return &block
 }
 
 func boldLine(x1, y1, x2, y2 float64) *html.Node {
@@ -140,27 +211,12 @@ func boldLine(x1, y1, x2, y2 float64) *html.Node {
 		Type: html.ElementNode,
 		Data: "line",
 		Attr: []html.Attribute{
-			{"", "x1", fmt.Sprint(x1)},
-			{"", "y1", fmt.Sprint(y1)},
-			{"", "x2", fmt.Sprint(x2)},
-			{"", "y2", fmt.Sprint(y2)},
-			{"", "stroke", "black"},
-			{"", "stroke-width", "1"},
-		},
-	}
-}
-
-func faintLine(x1, y1, x2, y2 float64) *html.Node {
-	return &html.Node{
-		Type: html.ElementNode,
-		Data: "line",
-		Attr: []html.Attribute{
-			{"", "x1", fmt.Sprint(x1)},
-			{"", "y1", fmt.Sprint(y1)},
-			{"", "x2", fmt.Sprint(x2)},
-			{"", "y2", fmt.Sprint(y2)},
-			{"", "stroke", "gray"},
-			{"", "stroke-width", "1"},
+			{Key: "x1", Val: fmt.Sprint(x1)},
+			{Key: "y1", Val: fmt.Sprint(y1)},
+			{Key: "x2", Val: fmt.Sprint(x2)},
+			{Key: "y2", Val: fmt.Sprint(y2)},
+			{Key: "stroke", Val: "black"},
+			{Key: "stroke-width", Val: "1"},
 		},
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/rand"
 	"os"
 	"time"
 
@@ -16,10 +17,21 @@ func main() {
 	}
 	defer f.Close()
 
-	n, err := latencyheatmap.RenderSVG([]latencyheatmap.Datapoint{
-		{time.Now(), time.Second},
-		{time.Now(), time.Hour},
-	})
+	rand.Seed(time.Now().UnixNano())
+	baseTime := time.Now()
+	points := make([]latencyheatmap.Datapoint, 0, 1000)
+	for i := 0; i < 100000; i++ {
+		v := time.Second * 2 + time.Duration(rand.NormFloat64() * float64(time.Second))
+		if v <= 0 {
+			v = 0
+		}
+		points = append(points, latencyheatmap.Datapoint{
+			Time:    baseTime.Add(time.Duration(float64(time.Hour) * rand.Float64())),
+			Latency: v,
+		})
+	}
+
+	n, err := latencyheatmap.RenderSVG(points)
 	if err != nil {
 		panic(err)
 	}
