@@ -21,8 +21,13 @@ const js = "" +
 	"}" +
 	"function c() {details.nodeValue = \"(hover over a square for details)\";}"
 
+type SVGOptions struct {
+	DisableXMLDoctype bool
+}
+
 func RenderSVG(
 	points []Datapoint,
+	options SVGOptions,
 ) (*html.Node, error) {
 	if points == nil || len(points) == 0 {
 		return nil, fmt.Errorf("must provide at least one datapoint")
@@ -37,11 +42,11 @@ func RenderSVG(
 	elapsed := points[len(points)-1].Time.Sub(points[0].Time)
 	// start with the perfect width
 	columnInterval := elapsed / 100
-	// TODO: optimise so that we get human time sections
+	columnInterval = roundUpToFriendlyInterval(columnInterval)
 	if columnInterval <= 0 {
 		panic("wat")
 	}
-	columns := int(elapsed / columnInterval)
+	columns := int(elapsed / columnInterval) + 1
 
 	// TODO: handle out of range Inf
 	minValue := time.Duration(0)
@@ -53,14 +58,12 @@ func RenderSVG(
 	}
 
 	// choose a block height so that we
-	rowPeriod := (maxValue - minValue)/100
-	// TODO: optimise so that we get human time sections
+	rowPeriod := (maxValue - minValue) / 100
+	rowPeriod = roundUpToFriendlyInterval(rowPeriod)
 	if rowPeriod <= 0 {
 		panic("wat")
 	}
-	rows := int((maxValue - minValue) / rowPeriod)
-	fmt.Printf("%d rows of %s\n", rows, rowPeriod)
-	fmt.Printf("%d columns of %s\n", columns, columnInterval)
+	rows := int((maxValue - minValue) / rowPeriod) + 1
 
 	blocks := make([][]int, columns)
 	for i := 0; i < columns; i++ {
@@ -123,8 +126,8 @@ func RenderSVG(
 
 	for i := 0; i < columns; i++ {
 		for j := 0; j < rows; j++ {
-			if blocks[i][columns - j - 1] > 0 {
-				val := float64(blocks[i][columns-j-1]) / float64(largestFrequency)
+			if blocks[i][rows - j - 1] > 0 {
+				val := float64(blocks[i][rows-j-1]) / float64(largestFrequency)
 				newNode := &html.Node{
 					Type: html.ElementNode,
 					Data: "rect",
@@ -139,9 +142,9 @@ func RenderSVG(
 								// the relative time on the left column
 								time.Duration(i) * columnInterval,
 								// the latency of the row start
-								time.Duration(columns-j-1) * rowPeriod,
-								time.Duration(columns-j) * rowPeriod,
-								blocks[i][columns-j-1],
+								time.Duration(rows-j-1) * rowPeriod,
+								time.Duration(rows-j) * rowPeriod,
+								blocks[i][rows-j-1],
 							)},
 						{Key: "onmouseout", Val: "c()"},
 					},
@@ -157,26 +160,48 @@ func RenderSVG(
 	svgNode.AppendChild(boldLine(padLeft, imageHeight - padBottom, imageWidth - padRight, imageHeight - padBottom))
 
 	svgNode.AppendChild(text(padLeft, imageHeight - padBottom + 5, "0", "hanging", "start"))
-	svgNode.AppendChild(text(imageWidth - padRight, imageHeight - padBottom + 5, fmt.Sprintf("+%s", friendly(columnInterval * time.Duration(columns))), "hanging", "end"))
+	svgNode.AppendChild(text(imageWidth - padRight, imageHeight - padBottom + 5, fmt.Sprintf("+%s", roundTo2ndDecimal(columnInterval * time.Duration(columns))), "hanging", "end"))
 	svgNode.AppendChild(text(padLeft / 2, imageHeight / 2, "Latency", "middle", "middle"))
 	svgNode.LastChild.Attr = append(svgNode.LastChild.Attr, html.Attribute{Key: "transform", Val: fmt.Sprintf("rotate(90, %f, %f)", padLeft / 2, imageHeight / 2)})
 
 	svgNode.AppendChild(text(padLeft - 5, imageHeight - padBottom, "0", "alphabetic", "end"))
-	svgNode.AppendChild(text(padLeft - 5, padTop, fmt.Sprintf("%s", friendly(rowPeriod * time.Duration(rows))), "hanging", "end"))
+	svgNode.AppendChild(text(padLeft - 5, padTop, fmt.Sprintf("%s", roundTo2ndDecimal(rowPeriod * time.Duration(rows))), "hanging", "end"))
 	svgNode.AppendChild(text(imageWidth / 2, imageHeight - padBottom + 5, "Relative time", "hanging", "middle"))
 
 	svgNode.AppendChild(text(imageWidth / 2, imageHeight - padBottom / 3, "(hover over a square for details)", "middle", "middle"));
 	svgNode.LastChild.Attr = append(svgNode.LastChild.Attr, html.Attribute{Key: "id", Val: "details"})
 
-	return svgNode, nil
+	outputNode := svgNode
+	if !options.DisableXMLDoctype {
+		outputNode = &html.Node{
+			Type: html.DocumentNode,
+		}
+		outputNode.AppendChild(&html.Node{
+			Type: html.RawNode,
+			Data: "<?xml version=\"1.0\" standalone=\"no\"?>",
+		})
+		outputNode.AppendChild(&html.Node{
+			Type: html.DoctypeNode,
+			Data: "svg",
+			Attr: []html.Attribute{
+				{"", "public", "-//W3C//DTD SVG 1.1//EN"},
+				{"", "system", "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"},
+			},
+		})
+		outputNode.AppendChild(svgNode)
+	}
+
+	return outputNode, nil
 }
 
-func friendly(duration time.Duration) time.Duration {
+// roundTo2ndDecimal will round a duration to an appropriate value so that when rendered it only shows 2 decimal places.
+// eg: 45m12.53s -> 45m12s
+func roundTo2ndDecimal(duration time.Duration) time.Duration {
 	if duration > time.Hour {
-		return duration.Round(time.Minute * 10)
+		return duration.Round(time.Minute)
 	}
 	if duration > time.Minute {
-		return duration.Round(time.Second * 10)
+		return duration.Round(time.Second)
 	}
 	if duration > time.Second {
 		return duration.Round(time.Millisecond * 10)
@@ -186,6 +211,19 @@ func friendly(duration time.Duration) time.Duration {
 	}
 	if duration > time.Microsecond {
 		return duration.Round(time.Nanosecond * 10)
+	}
+	return duration
+}
+
+func roundUpToFriendlyInterval(duration time.Duration) time.Duration {
+	for _, d := range []time.Duration{
+		time.Hour, time.Minute * 10, time.Minute * 5, time.Minute, time.Second * 30, time.Second * 10, time.Second,
+		time.Millisecond * 500, time.Millisecond * 200, time.Millisecond * 100, time.Millisecond * 50, time.Millisecond * 10,
+		time.Millisecond,
+	} {
+		if duration > d {
+			return duration.Round(d + d/2)
+		}
 	}
 	return duration
 }
