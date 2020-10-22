@@ -1,2 +1,5 @@
 # latency-heatmap-go
-Golang library (and binary) for generating SVG latency histogram heatmaps
+
+Golang library (and binary) for generating SVG latency histogram heatmaps.
+
+![](demo.svg)
